@@ -1,7 +1,9 @@
 streamlit
+streamlit
 pymupdf
 faiss-cpu
-sentence-transformers
-langchain-text-splitters
+numpy
 torch
-transformer
+sentence-transformers
+transformers
+langchain-text-splitters
