@@ -1,9 +1,7 @@
 streamlit
-streamlit
 pymupdf
 faiss-cpu
 numpy
-torch
 sentence-transformers
-transformers
 langchain-text-splitters
+google-genai
