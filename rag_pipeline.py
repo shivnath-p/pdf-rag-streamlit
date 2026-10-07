@@ -20,20 +20,28 @@ def load_embedding_model() -> SentenceTransformer:
     return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 
-def create_gemini_client():
-    """Read the API key from Streamlit secrets or the environment."""
-    api_key = None
+# Default model (Google retired gemini-2.5-flash for new users).
+# Override with GEMINI_MODEL in Streamlit Secrets or the environment.
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+FALLBACK_GEMINI_MODELS = ["gemini-flash-latest"]
+
+
+def _get_setting(name: str):
+    """Read a setting from Streamlit secrets first, then the environment."""
+    value = None
 
     try:
         import streamlit as st
 
-        api_key = st.secrets.get("GEMINI_API_KEY")
+        value = st.secrets.get(name)
     except Exception:
         pass
 
-    if not api_key:
-        api_key = os.getenv("GEMINI_API_KEY")
+    return value or os.getenv(name)
 
+
+def create_gemini_client():
+    api_key = _get_setting("GEMINI_API_KEY")
     return genai.Client(api_key=api_key) if api_key else None
 
 
@@ -49,7 +57,7 @@ class ProductionRAGPipeline:
     def __init__(self, embedding_model=None, client=None):
         self.embedding_model = embedding_model or load_embedding_model()
         self.client = client if client is not None else create_gemini_client()
-        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        self.gemini_model = _get_setting("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
 
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
@@ -149,12 +157,29 @@ class ProductionRAGPipeline:
     # ------------------------------------------------------------------
 
     def _call_gemini(self, prompt: str) -> str:
-        response = self.client.models.generate_content(
-            model=self.gemini_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.2),
-        )
-        return (response.text or "").strip()
+        """Try the configured model; if it was retired (404), try fallbacks."""
+        candidates = [self.gemini_model] + [
+            m for m in FALLBACK_GEMINI_MODELS if m != self.gemini_model
+        ]
+        last_error = None
+
+        for model_name in candidates:
+            try:
+                response = self.client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(temperature=0.2),
+                )
+                self.gemini_model = model_name  # remember the one that worked
+                return (response.text or "").strip()
+            except Exception as e:
+                last_error = e
+                text = str(e)
+                if "404" in text or "NOT_FOUND" in text:
+                    continue  # model unavailable -> try the next one
+                raise
+
+        raise last_error
 
     @staticmethod
     def _format_context(items: List[Dict]) -> str:
