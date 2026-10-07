@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from typing import Dict, List, Optional, Tuple
 
 import faiss
@@ -26,7 +27,14 @@ def load_embedding_model() -> SentenceTransformer:
 
 # Override with GEMINI_MODEL in Streamlit Secrets or the environment.
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-FALLBACK_GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
+FALLBACK_GEMINI_MODELS = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
+]
+
+# Har model par kitni baar try karna hai (503/429 aane par).
+MAX_RETRIES_PER_MODEL = 3
 
 
 def _get_setting(name: str):
@@ -197,20 +205,34 @@ class ProductionRAGPipeline:
         last_error = None
 
         for model_name in candidates:
-            try:
-                response = self.client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(temperature=0.2),
-                )
-                self.gemini_model = model_name  # remember the one that worked
-                return (response.text or "").strip()
-            except Exception as e:
-                last_error = e
-                text = str(e)
-                if "404" in text or "NOT_FOUND" in text:
-                    continue  # model unavailable -> try the next one
-                raise
+            for attempt in range(MAX_RETRIES_PER_MODEL):
+                try:
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(temperature=0.2),
+                    )
+                    self.gemini_model = model_name  # remember the one that worked
+                    return (response.text or "").strip()
+                except Exception as e:
+                    last_error = e
+                    text = str(e)
+
+                    # Model retired / not found -> seedha next model par jao.
+                    if "404" in text or "NOT_FOUND" in text:
+                        break
+
+                    # Temporary overload / rate limit -> thoda ruko, phir retry.
+                    if any(
+                        code in text
+                        for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "500")
+                    ):
+                        if attempt < MAX_RETRIES_PER_MODEL - 1:
+                            time.sleep(2 ** attempt)  # 1s, 2s, ...
+                            continue
+                        break  # is model ke retries khatam -> next model
+
+                    raise  # koi aur error (jaise invalid API key) -> upar bhejo
 
         raise last_error
 
