@@ -1,7 +1,9 @@
-streamlit>=1.40
-faiss-cpu
-numpy
-pymupdf
-langchain-text-splitters
+streamlit
+torch
+torchvision
 sentence-transformers
+faiss-cpu
+pymupdf
 google-genai
+langchain-text-splitters
+numpy
