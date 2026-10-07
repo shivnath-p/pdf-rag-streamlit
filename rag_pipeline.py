@@ -12,36 +12,32 @@ from google import genai
 
 class ProductionRAGPipeline:
     """
-    Handles the complete RAG pipeline.
+    Handles document processing and question answering.
 
-    Flow:
-        PDF
-         ↓
-        Text extraction
-         ↓
-        Chunking
-         ↓
-        Embeddings
-         ↓
-        FAISS
-         ↓
-        Relevant chunks
-         ↓
-        Gemini
-         ↓
-        Final answer
+    PDF
+      ↓
+    Text extraction
+      ↓
+    Chunking
+      ↓
+    Embeddings
+      ↓
+    FAISS retrieval
+      ↓
+    Gemini
+      ↓
+    Answer
     """
 
     def __init__(self):
 
-        # Small embedding model keeps the application reasonably
-        # fast and memory-friendly on Streamlit Cloud.
+        # A lightweight embedding model keeps the application
+        # practical for a cloud deployment.
         self.embedding_model = SentenceTransformer(
             "sentence-transformers/all-MiniLM-L6-v2"
         )
 
-        # These settings give us reasonably sized chunks while
-        # keeping some context between neighbouring chunks.
+        # Overlap helps preserve context between neighbouring chunks.
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
             chunk_overlap=120,
@@ -62,8 +58,6 @@ class ProductionRAGPipeline:
 
         self.client = self._create_gemini_client()
 
-        # You can change this through Streamlit Secrets/environment
-        # without changing the Python code.
         self.gemini_model = os.getenv(
             "GEMINI_MODEL",
             "gemini-2.5-flash"
@@ -77,14 +71,14 @@ class ProductionRAGPipeline:
 
         api_key = None
 
-        # Streamlit Cloud
+        # Streamlit Cloud secrets
         try:
             import streamlit as st
             api_key = st.secrets.get("GEMINI_API_KEY")
         except Exception:
             pass
 
-        # Local development
+        # Local environment fallback
         if not api_key:
             api_key = os.getenv("GEMINI_API_KEY")
 
@@ -96,7 +90,7 @@ class ProductionRAGPipeline:
         )
 
     # ---------------------------------------------------------
-    # Extract text from PDF and create chunks
+    # Extract PDF text and create chunks
     # ---------------------------------------------------------
 
     def extract_and_chunk_pdf(
@@ -133,8 +127,6 @@ class ProductionRAGPipeline:
 
                     chunk = chunk.strip()
 
-                    # Ignore tiny fragments that aren't useful
-                    # for semantic search.
                     if len(chunk) < 30:
                         continue
 
@@ -146,25 +138,28 @@ class ProductionRAGPipeline:
                     )
 
         finally:
+
             document.close()
 
         if not self.chunks:
+
             raise ValueError(
                 "No readable text was found in this PDF. "
-                "The PDF may be scanned/image-based."
+                "The PDF may be scanned or image-based."
             )
 
         return self.chunks
 
     # ---------------------------------------------------------
-    # Create FAISS vector index
+    # Build FAISS index
     # ---------------------------------------------------------
 
     def build_vector_index(self):
 
         if not self.chunks:
+
             raise ValueError(
-                "No chunks found. Process a PDF first."
+                "No document chunks found."
             )
 
         texts = [
@@ -185,8 +180,6 @@ class ProductionRAGPipeline:
 
         dimension = embeddings.shape[1]
 
-        # Inner-product search works well because the embeddings
-        # are normalized above.
         self.index = faiss.IndexFlatIP(
             dimension
         )
@@ -198,7 +191,7 @@ class ProductionRAGPipeline:
         return self.index
 
     # ---------------------------------------------------------
-    # Retrieve relevant document sections
+    # Search relevant chunks
     # ---------------------------------------------------------
 
     def retrieve(
@@ -208,6 +201,7 @@ class ProductionRAGPipeline:
     ) -> List[Dict]:
 
         if self.index is None:
+
             raise ValueError(
                 "Vector index is not ready."
             )
@@ -238,17 +232,15 @@ class ProductionRAGPipeline:
             if index_id < 0:
                 continue
 
-            result = self.chunks[
+            item = self.chunks[
                 index_id
             ].copy()
 
-            result["score"] = float(
+            item["score"] = float(
                 score
             )
 
-            results.append(
-                result
-            )
+            results.append(item)
 
         return results
 
@@ -266,43 +258,31 @@ class ProductionRAGPipeline:
 
             return (
                 "⚠️ Gemini API key is not configured.\n\n"
-                "Please add GEMINI_API_KEY to "
-                "Streamlit Secrets."
+                "Add GEMINI_API_KEY in Streamlit Secrets."
             )
 
-        context_parts = []
-
-        for item in retrieved_chunks:
-
-            context_parts.append(
-                f"""
-[Page {item['page']}]
-
-{item['text']}
-"""
-            )
-
-        context = "\n".join(
-            context_parts
+        context = "\n\n".join(
+            [
+                f"[Page {item['page']}]\n{item['text']}"
+                for item in retrieved_chunks
+            ]
         )
 
         prompt = f"""
-You are a professional PDF document assistant.
+You are a professional document assistant.
 
-Answer the user's question using ONLY the information
-contained in the document context below.
+Answer the user's question using ONLY the document
+context provided below.
 
 Rules:
 
-1. Do not invent information.
-2. Do not use outside information.
-3. If the answer is not available in the document,
-   clearly say that it was not found.
-4. Give a direct and useful answer.
-5. Use simple professional language.
-6. Use bullet points when appropriate.
-7. Preserve dates, numbers and names accurately.
-8. Do not unnecessarily repeat the question.
+- Do not invent facts.
+- Do not use outside information.
+- If the answer is not available, say so clearly.
+- Give a direct and useful answer.
+- Use simple professional language.
+- Use bullet points when useful.
+- Preserve dates, numbers, names and conditions accurately.
 
 DOCUMENT CONTEXT:
 
@@ -323,6 +303,7 @@ ANSWER:
             )
 
             if response.text:
+
                 return response.text.strip()
 
             return (
@@ -338,7 +319,7 @@ ANSWER:
             )
 
     # ---------------------------------------------------------
-    # Complete question-answer flow
+    # Ask a question
     # ---------------------------------------------------------
 
     def ask(
@@ -354,12 +335,12 @@ ANSWER:
                 []
             )
 
-        retrieved_chunks = self.retrieve(
+        retrieved = self.retrieve(
             question,
             top_k
         )
 
-        if not retrieved_chunks:
+        if not retrieved:
 
             return (
                 "I could not find relevant information "
@@ -369,25 +350,23 @@ ANSWER:
 
         answer = self.generate_answer(
             question,
-            retrieved_chunks
+            retrieved
         )
 
         pages = sorted(
             set(
                 item["page"]
-                for item in retrieved_chunks
+                for item in retrieved
             )
         )
 
         return answer, pages
 
     # ---------------------------------------------------------
-    # Generate executive summary
+    # Generate document summary
     # ---------------------------------------------------------
 
-    def summarize(
-        self
-    ) -> Tuple[str, List[int]]:
+    def summarize(self) -> Tuple[str, List[int]]:
 
         if not self.chunks:
 
@@ -400,8 +379,8 @@ ANSWER:
             self.chunks
         )
 
-        # Instead of sending a huge PDF to Gemini, take
-        # representative sections from throughout the document.
+        # We sample sections from the entire document so that
+        # the summary isn't based only on the first few pages.
         sample_count = min(
             15,
             total_chunks
@@ -409,7 +388,7 @@ ANSWER:
 
         if total_chunks <= sample_count:
 
-            selected_chunks = self.chunks
+            selected = self.chunks
 
         else:
 
@@ -420,7 +399,7 @@ ANSWER:
                 dtype=int
             )
 
-            selected_chunks = [
+            selected = [
                 self.chunks[i]
                 for i in positions
             ]
@@ -428,7 +407,7 @@ ANSWER:
         context = "\n\n".join(
             [
                 f"[Page {item['page']}]\n{item['text']}"
-                for item in selected_chunks
+                for item in selected
             ]
         )
 
@@ -440,32 +419,32 @@ ANSWER:
             )
 
         prompt = f"""
-Create a professional executive summary of this PDF.
+Create a professional executive summary of this document.
 
-Use the following structure:
+Use these sections:
 
 ## Main Purpose
-Explain what the document is mainly about.
+Explain the main purpose of the document.
 
 ## Key Topics
-List the most important topics.
+List the major topics.
 
 ## Important Terms / Conditions
-Mention important terms, conditions or requirements.
+Mention important terms and conditions.
 
 ## Important Details
-Include important dates, numbers, obligations,
-responsibilities or limitations if present.
+Mention important dates, numbers, obligations,
+responsibilities or limitations when present.
 
 ## Conclusion
-Give the main takeaway from the document.
+Give the main takeaway.
 
 Rules:
 
 - Use ONLY the provided document context.
 - Do not invent information.
-- Keep the summary clear and professional.
-- Use bullet points where useful.
+- Keep the summary professional and easy to read.
+- Use bullet points where appropriate.
 
 DOCUMENT:
 
@@ -485,9 +464,7 @@ DOCUMENT:
 
             else:
 
-                summary = (
-                    "Unable to generate the summary."
-                )
+                summary = "Unable to generate the summary."
 
         except Exception as e:
 
@@ -499,7 +476,7 @@ DOCUMENT:
         pages = sorted(
             set(
                 item["page"]
-                for item in selected_chunks
+                for item in selected
             )
         )
 
