@@ -1,7 +1,7 @@
-streamlit
-pymupdf
+streamlit>=1.40
 faiss-cpu
 numpy
-sentence-transformers
+pymupdf
 langchain-text-splitters
+sentence-transformers
 google-genai
