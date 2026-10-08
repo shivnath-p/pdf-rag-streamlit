@@ -257,10 +257,24 @@ class ProductionRAGPipeline:
                     text = str(e)
                     lowered = text.lower()
 
-                    # Model thinking-off support nahi karta -> bina uske retry.
-                    if "thinking" in lowered and self._thinking_off:
+                    # Galat API key: retry ka koi fayda nahi, seedha error dikhao.
+                    if "api key" in lowered or "api_key" in lowered:
+                        raise
+
+                    # Model thinking-off support nahi karta (400 INVALID_ARGUMENT,
+                    # kabhi message mein "thinking" likha hota hai, kabhi nahi)
+                    # -> thinking config hata ke wahi model dobara try karo.
+                    if self._thinking_off and (
+                        "thinking" in lowered
+                        or "400" in text
+                        or "INVALID_ARGUMENT" in text
+                    ):
                         self._thinking_off = False
                         continue
+
+                    # Thinking ke bina bhi 400 aaye -> is model ko chhodo, next model.
+                    if "400" in text or "INVALID_ARGUMENT" in text:
+                        break
 
                     if "404" in text or "NOT_FOUND" in text:
                         break
