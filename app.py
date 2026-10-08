@@ -90,7 +90,6 @@ if uploaded:
 
 rag = st.session_state.get("rag")
 if rag is None:
-    st.info("Sidebar se PDF upload karo.")
     st.stop()
 
 # ---------------- Chat ----------------
